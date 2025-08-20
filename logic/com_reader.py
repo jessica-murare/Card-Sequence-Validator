@@ -23,6 +23,7 @@ class ComPortReader:
 
     def read_loop(self):
         try:
+            print(f"Attempting to open serial port {self.port} at {self.baudrate} baud...")
             with serial.Serial(
                 self.port,
                 self.baudrate,
@@ -33,20 +34,22 @@ class ComPortReader:
                 rtscts=False,    # Handshake = off
                 dsrdtr=False     # Handshake = off
             ) as ser:
+                print(f"Successfully opened serial port {self.port}.")
                 while self.running:
                     if ser.in_waiting > 0:
                         raw_data = ser.readline()
-                        # Show both raw bytes and decoded string for debugging
                         decoded_data = raw_data.decode(errors='ignore').strip()
+                        print(f"Received raw: {raw_data}, Decoded: {decoded_data}")
                         if self.callback:
-                            # Send the decoded data directly
-                            self.callback(f"Data: {decoded_data}")
+                            self.callback(decoded_data)
         except serial.SerialException as e:
+            print(f"Serial error in read_loop: {e}")
             if self.error_callback:
                 self.error_callback(f"Serial error: {e}")
             else:
                 print(f"Error: {e}")
         except Exception as e:
+            print(f"Unexpected error in read_loop: {e}")
             if self.error_callback:
                 self.error_callback(f"Unexpected error: {e}")
             else:
