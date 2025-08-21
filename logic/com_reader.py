@@ -1,5 +1,6 @@
 import serial
 import threading
+import re
 
 class ComPortReader:
     def __init__(self, port, baudrate=115200, callback=None, error_callback=None):
@@ -39,6 +40,8 @@ class ComPortReader:
                     if ser.in_waiting > 0:
                         raw_data = ser.readline()
                         decoded_data = raw_data.decode(errors='ignore').strip()
+                        
+                        decoded_data = re.sub(r'[^\x20-\x7E]', '',decoded_data)
                         print(f"Received raw: {raw_data}, Decoded: {decoded_data}")
                         if self.callback:
                             self.callback(decoded_data)
