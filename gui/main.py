@@ -5,10 +5,10 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout, QFileDialog,
-    QComboBox, QTextEdit, QFrame, QHeaderView, QMessageBox, QStatusBar, QDialog
+    QComboBox, QTextEdit, QFrame, QHeaderView, QMessageBox, QStatusBar, QDialog, QListWidget, QDialogButtonBox
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QPixmap
 import csv
 from logic.com_reader import ComPortReader
 from logic.com_selector import list_com_ports
@@ -41,6 +41,37 @@ class PreviewWindow(QDialog):
                 table.setItem(row, 1, QTableWidgetItem(iccid))
 
             layout.addWidget(table)
+
+class SelectStartCardDialog(QDialog):
+    def __init__(self, expected_cards, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Starting Card")
+        self.setMinimumSize(300, 400)
+        self.setStyleSheet(parent.styleSheet()) # Inherit stylesheet
+        self.selected_index = -1
+
+        layout = QVBoxLayout(self)
+
+        label = QLabel("Select the NUMCARD to start processing from:")
+        layout.addWidget(label)
+
+        self.card_list_widget = QListWidget()
+        for i, (numcard, iccid) in enumerate(expected_cards):
+            self.card_list_widget.addItem(f"{numcard} (ICCID: {iccid})")
+        layout.addWidget(self.card_list_widget)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.card_list_widget.itemClicked.connect(self._item_clicked)
+
+    def _item_clicked(self, item):
+        self.selected_index = self.card_list_widget.row(item)
+
+    def get_selected_index(self):
+        return self.selected_index
 
 class ModernCardValidator(QMainWindow):
     def __init__(self):
@@ -100,14 +131,11 @@ class ModernCardValidator(QMainWindow):
         self.com_port_combo.setEnabled(True)
         self.findChild(QPushButton, "refreshBtn").setEnabled(True)
 
-        # Clear display fields and reset parsing timeline
-        self.clear_loaded_file()
-
     
 
     def handle_com_data(self, scanned_code):
         self.scanner_input.setText(scanned_code)
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
         if self.first_scan_received:
             self.first_scan_received = False
@@ -131,6 +159,9 @@ class ModernCardValidator(QMainWindow):
         # Log the current scan's details
         self.add_log_entry(timestamp, scanned_code, expected_iccid_for_display, status, self.log_table.rowCount() + 1)
         self.status_bar.showMessage(f"Scanned: {scanned_code} - {status}")
+
+        if status == "NOT OK":
+            self.stop_reading() # Stop reading if status is NOT OK
 
         # Update display for the *next* expected card
         self.update_card_display()
@@ -165,13 +196,13 @@ class ModernCardValidator(QMainWindow):
         self.setStyleSheet("""
             /* General Window and Background */
             QMainWindow {
-                background-color: #1A2A3A; /* Deep Ocean: Background */
-                color: #EAEAEA; /* Deep Ocean: Text */
+                background-color: #FFFFFF; /* General Backgrounds */
+                color: #354563; /* Headers/Main UI Text */
             }
 
             /* Labels */
             QLabel {
-                color: #EAEAEA; /* Deep Ocean: Text */
+                color: #354563; /* Headers/Main UI Text */
                 font-weight: bold;
                 padding: 2px;
             }
@@ -179,16 +210,16 @@ class ModernCardValidator(QMainWindow):
             /* LineEdits and ComboBoxes (Input/Display Fields) */
             QLineEdit, QComboBox {
                 padding: 10px;
-                border: 1px solid #2A3A4A; /* Deep Ocean: Panels/Surface */
+                border: 1px solid #A0B0C0; /* Slightly darker than #BAC7D2 */
                 border-radius: 5px;
-                background-color: #2A3A4A; /* Deep Ocean: Panels/Surface */
-                color: #EAEAEA; /* Deep Ocean: Text */
-                selection-background-color: #4A9A9A; /* Deep Ocean: Primary Accent */
-                selection-color: #EAEAEA; /* Deep Ocean: Text */
+                background-color: #BAC7D2; /* Panels/Card Backgrounds */
+                color: #354563; /* Headers/Main UI Text */
+                selection-background-color: #4896DD; /* Primary Buttons & Active Controls */
+                selection-color: #FFFFFF; /* General Backgrounds */
             }
             QLineEdit:focus, QComboBox:focus {
-                border-color: #4A9A9A; /* Deep Ocean: Primary Accent */
-                background-color: #2A3A4A; /* Deep Ocean: Panels/Surface */
+                border-color: #4896DD; /* Primary Buttons & Active Controls */
+                background-color: #BAC7D2; /* Panels/Card Backgrounds */
             }
             QLineEdit::placeholder {
                 color: #99AABF; /* Lighter shade for placeholder */
@@ -199,46 +230,46 @@ class ModernCardValidator(QMainWindow):
                 padding: 10px 20px;
                 border-radius: 5px;
                 font-weight: bold;
-                color: #EAEAEA; /* Deep Ocean: Text */
-                background-color: #4A9A9A; /* Deep Ocean: Primary Accent */
+                color: #FFFFFF; /* General Backgrounds */
+                background-color: #4896DD; /* Primary Buttons & Active Controls */
                 border: none;
             }
             QPushButton:hover {
-                background-color: #5AAFAF; /* Lighter shade of Primary Accent */
+                background-color: #7DD2F3; /* Hover Effects/Sliders */
             }
             QPushButton:pressed {
-                background-color: #3A8A8A; /* Darker shade of Primary Accent */
+                background-color: #3A7BBF; /* Darker shade of Primary Buttons & Active Controls */
             }
             QPushButton:disabled {
-                background-color: #99AABF; /* Lighter shade for placeholder */
-                color: #1A2A3A; /* Deep Ocean: Background */
-                border: 1px solid #2A3A4A; /* Deep Ocean: Panels/Surface */
+                background-color: #D0D8E0; /* Lighter shade of Panels/Card Backgrounds */
+                color: #354563; /* Headers/Main UI Text */
+                border: 1px solid #BAC7D2; /* Panels/Card Backgrounds */
             }
 
             /* Table Widget */
             QTableWidget {
-                background-color: #2A3A4A; /* Deep Ocean: Panels/Surface */
-                color: #EAEAEA; /* Deep Ocean: Text */
-                border: 1px solid #1A2A3A; /* Deep Ocean: Background */
+                background-color: #BAC7D2; /* Panels/Card Backgrounds */
+                color: #354563; /* Headers/Main UI Text */
+                border: 1px solid #FFFFFF; /* General Backgrounds */
                 border-radius: 5px;
-                gridline-color: #1A2A3A; /* Deep Ocean: Background */
-                selection-background-color: #4A9A9A; /* Deep Ocean: Primary Accent */
-                selection-color: #EAEAEA; /* Deep Ocean: Text */
-                alternate-background-color: #1A2A3A; /* Deep Ocean: Background */
+                gridline-color: #FFFFFF; /* General Backgrounds */
+                selection-background-color: #4896DD; /* Primary Buttons & Active Controls */
+                selection-color: #FFFFFF; /* General Backgrounds */
+                alternate-background-color: #FFFFFF; /* General Backgrounds */
             }
             QHeaderView::section {
-                background-color: #1A2A3A; /* Deep Ocean: Background */
+                background-color: #FFFFFF; /* General Backgrounds */
                 padding: 10px;
                 font-weight: bold;
-                color: #EAEAEA; /* Deep Ocean: Text */
-                border: 1px solid #2A3A4A; /* Deep Ocean: Panels/Surface */
-                border-bottom: 2px solid #4A9A9A; /* Deep Ocean: Primary Accent */
+                color: #354563; /* Headers/Main UI Text */
+                border: 1px solid #BAC7D2; /* Panels/Card Backgrounds */
+                border-bottom: 2px solid #4896DD; /* Primary Buttons & Active Controls */
             }
 
             /* Header Frame */
             QFrame#headerFrame {
-                background-color: #2A3A4A; /* Deep Ocean: Panels/Surface */
-                border: 1px solid #1A2A3A; /* Deep Ocean: Background */
+                background-color: #BAC7D2; /* Panels/Card Backgrounds */
+                border: 1px solid #FFFFFF; /* General Backgrounds */
                 border-radius: 5px;
                 padding: 10px;
             }
@@ -247,21 +278,21 @@ class ModernCardValidator(QMainWindow):
             QLabel#titleLabel {
                 font-size: 26px;
                 font-weight: bold;
-                color: #4A9A9A; /* Deep Ocean: Primary Accent */
+                color: #000000; /* Changed to black for visibility */
             }
             QLabel#clockLabel {
                 font-size: 14px;
-                color: #99AABF; /* Lighter shade for placeholder */
-                border: 1px solid #2A3A4A; /* Deep Ocean: Panels/Surface */
+                color: #000000; /* Changed to black for visibility */
+                border: 1px solid #BAC7D2; /* Panels/Card Backgrounds */
                 border-radius: 4px;
                 padding: 6px;
-                background-color: #2A3A4A; /* Deep Ocean: Panels/Surface */
+                background-color: #BAC7D2; /* Panels/Card Backgrounds */
             }
 
             /* Status Bar */
             QStatusBar {
-                background-color: #2A3A4A; /* Deep Ocean: Panels/Surface */
-                color: #EAEAEA; /* Deep Ocean: Text */
+                background-color: #BAC7D2; /* Panels/Card Backgrounds */
+                color: #354563; /* Headers/Main UI Text */
                 padding: 5px;
             }
         """)
@@ -288,6 +319,14 @@ class ModernCardValidator(QMainWindow):
         header_frame.setObjectName("headerFrame")
         h_layout = QHBoxLayout(header_frame)
         h_layout.setContentsMargins(15, 15, 15, 15)
+
+        # Add logo
+        logo_label = QLabel()
+        logo_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'logo.png')
+        logo_pixmap = QPixmap(logo_path)
+        # Scale pixmap to a reasonable size, e.g., 50x50
+        logo_label.setPixmap(logo_pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        h_layout.addWidget(logo_label)
 
         title_label = QLabel("Card Sequence Validator")
         title_label.setObjectName("titleLabel")
@@ -377,10 +416,22 @@ class ModernCardValidator(QMainWindow):
         clear_upload_btn = QPushButton("Clear Upload")
         clear_upload_btn.setObjectName("clearUploadBtn")
         clear_upload_btn.clicked.connect(self.clear_loaded_file)
+        
+        self.set_start_card_btn = QPushButton("Set Start Card")
+        self.set_start_card_btn.setObjectName("setStartCardBtn")
+        self.set_start_card_btn.clicked.connect(self.select_start_card)
+        self.set_start_card_btn.setEnabled(False) # Initially disabled
+
+        clear_log_btn = QPushButton("Clear Log")
+        clear_log_btn.setObjectName("clearLogBtn")
+        clear_log_btn.clicked.connect(self.clear_log_table)
+        
         file_layout.addWidget(select_btn)
         file_layout.addWidget(preview_btn)
         file_layout.addWidget(download_btn)
         file_layout.addWidget(clear_upload_btn)
+        file_layout.addWidget(self.set_start_card_btn)
+        file_layout.addWidget(clear_log_btn)
         layout.addLayout(file_layout)
 
     def create_bottom_section(self, layout):
@@ -393,7 +444,7 @@ class ModernCardValidator(QMainWindow):
         self.update_clock()
 
     def update_clock(self):
-        now = datetime.now().strftime("%Y-%m-%d | %H:%M:%S")
+        now = datetime.now().strftime("%Y-%m-%d | %H:%M:%S.%f")[:-3]
         self.clock_label.setText(now)
 
     def load_sample_data(self):
@@ -404,26 +455,29 @@ class ModernCardValidator(QMainWindow):
         row_pos = self.log_table.rowCount()
         self.log_table.insertRow(row_pos)
         
+        index_item = QTableWidgetItem(str(index))
         timestamp_item = QTableWidgetItem(timestamp)
         scanned_code_item = QTableWidgetItem(scanned_code)
         expected_code_item = QTableWidgetItem(expected_code)
         status_item = QTableWidgetItem(status)
 
+        index_item.setFlags(index_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         timestamp_item.setFlags(timestamp_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         scanned_code_item.setFlags(scanned_code_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         expected_code_item.setFlags(expected_code_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-        self.log_table.setItem(row_pos, 0, timestamp_item)
-        self.log_table.setItem(row_pos, 1, scanned_code_item)
-        self.log_table.setItem(row_pos, 2, expected_code_item)
+        self.log_table.setItem(row_pos, 0, index_item)
+        self.log_table.setItem(row_pos, 1, timestamp_item)
+        self.log_table.setItem(row_pos, 2, scanned_code_item)
+        self.log_table.setItem(row_pos, 3, expected_code_item)
 
         status_item.setFont(QFont("Arial", weight=QFont.Weight.Bold))
         if status == "OK":
             status_item.setForeground(QColor("#2ecc71")) # Green
         else:
             status_item.setForeground(QColor("#e74c3c")) # Red
-        self.log_table.setItem(row_pos, 3, status_item)
+        self.log_table.setItem(row_pos, 4, status_item)
 
         self.log_data.append({
             "index": index, "timestamp": timestamp, "scanned_code": scanned_code, "expected_code": expected_code, "status": status
@@ -464,6 +518,7 @@ class ModernCardValidator(QMainWindow):
             self.current_card_index = 0
             self.first_scan_received = True
             self.status_bar.showMessage(f"Loaded {len(self.expected_cards)} expected cards.", 3000)
+            self.set_start_card_btn.setEnabled(True) # Enable when file is loaded
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error loading expected cards: {str(e)}")
             self.expected_cards = []
@@ -496,7 +551,33 @@ class ModernCardValidator(QMainWindow):
         self.next_expected_card_input.clear()
         # self.text_area.clear() # Removed as text_area is no longer present
         self.findChild(QPushButton, "fileBtn").setEnabled(True)
+        self.set_start_card_btn.setEnabled(False) # Disable when file is cleared
         self.status_bar.showMessage("Loaded file cleared.", 3000)
+
+    def clear_log_table(self):
+        reply = QMessageBox.question(self, "Clear Log",
+                                     "Are you sure you want to clear the log table? This action cannot be undone.",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.log_table.setRowCount(0) # Clear all rows from the table
+            self.log_data = [] # Clear the log data list
+            self.status_bar.showMessage("Log table cleared.", 3000)
+
+    def select_start_card(self):
+        if not self.expected_cards:
+            QMessageBox.warning(self, "Warning", "Please load a file first to select a starting card.")
+            return
+
+        dialog = SelectStartCardDialog(self.expected_cards, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_index = dialog.get_selected_index()
+            if selected_index != -1:
+                self.current_card_index = selected_index
+                self.update_card_display()
+                QMessageBox.information(self, "Success", f"Starting processing from NUMCARD: {self.expected_cards[selected_index][0]}")
+            else:
+                QMessageBox.warning(self, "Warning", "No card selected.")
 
     
 
