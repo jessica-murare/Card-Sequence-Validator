@@ -5,7 +5,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout, QFileDialog,
-    QComboBox, QTextEdit, QFrame, QHeaderView, QMessageBox, QStatusBar, QDialog, QListWidget, QDialogButtonBox
+    QComboBox, QTextEdit, QFrame, QHeaderView, QMessageBox, QStatusBar, QDialog, QListWidget, QDialogButtonBox, QInputDialog
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QPixmap
@@ -161,7 +161,53 @@ class ModernCardValidator(QMainWindow):
         self.status_bar.showMessage(f"Scanned: {scanned_code} - {status}")
 
         if status == "NOT OK":
-            self.stop_reading() # Stop reading if status is NOT OK
+            # Search for similar values in remaining expected cards
+            similar_cards = []
+            for i in range(self.current_card_index + 1, len(self.expected_cards)):
+                expected_card_value = self.expected_cards[i][1]
+                # Simple similarity check: if scanned_code is a substring of expected_card_value
+                # or expected_card_value is a substring of scanned_code
+                if scanned_code in expected_card_value or expected_card_value in scanned_code:
+                    similar_cards.append((self.expected_cards[i][0], expected_card_value, i)) # (numcard, iccid, index)
+
+            if similar_cards:
+                # Prompt user to choose a similar card or continue
+                options = [f"Num: {num}, ICCID: {iccid}" for num, iccid, _ in similar_cards]
+                options.insert(0, "No, continue with current NOT OK status")
+
+                item, ok = QInputDialog.getItem(self, "Similar Card Found",
+                                                "A similar card was found. Do you want to jump to it?",
+                                                options, 0, False)
+
+                if ok and item != "No, continue with current NOT OK status":
+                    chosen_numcard_str, chosen_iccid = item.replace("Num: ", "").split(", ICCID: ")
+                    chosen_index = -1
+                    for num, iccid, idx in similar_cards:
+                        if num == chosen_numcard_str and iccid == chosen_iccid:
+                            chosen_index = idx
+                            break
+
+                    if chosen_index != -1:
+                        # Log skipped cards
+                        for i in range(self.current_card_index, chosen_index):
+                            skipped_num, skipped_iccid = self.expected_cards[i]
+                            self.add_log_entry(timestamp, "MISSING", skipped_iccid, "SKIPPED", self.log_table.rowCount() + 1)
+
+                        # Update current_card_index to the chosen card's index
+                        self.current_card_index = chosen_index
+                        expected_numcard = self.expected_cards[self.current_card_index][0]
+                        expected_iccid_for_display = self.expected_cards[self.current_card_index][1]
+                        status = "OK" # Mark as OK since we're accepting this jump
+
+                        # Re-log the chosen card as OK
+                        self.add_log_entry(timestamp, scanned_code, expected_iccid_for_display, status, self.log_table.rowCount() + 1)
+                        self.status_bar.showMessage(f"Scanned: {scanned_code} - {status} (Jumped)")
+                    else:
+                        self.stop_reading() # Fallback to original NOT OK if chosen_index not found
+                else:
+                    self.stop_reading() # Stop reading if status is NOT OK
+            else:
+                self.stop_reading() # Stop reading if status is NOT OK
 
         # Update display for the *next* expected card
         self.update_card_display()
