@@ -19,8 +19,22 @@ MSG_WAITING_FOR_SCAN = "Waiting for scan..."
 
 
 # File Paths
+import sys
+import os
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 ASSETS_DIR = "assets"
 LOGO_FILE = "logo.png"
+LOGO_PATH = resource_path(os.path.join(ASSETS_DIR, LOGO_FILE))
 
 # Messages
 MSG_NO_COM_PORTS = "No COM ports found."

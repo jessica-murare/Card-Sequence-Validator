@@ -236,7 +236,7 @@ class ModernCardValidator(QMainWindow):
         h_layout.setContentsMargins(15, 5, 15, 5)
 
         logo_label = QLabel()
-        logo_path = os.path.join(constants.ASSETS_DIR, constants.LOGO_FILE)
+        logo_path = constants.LOGO_PATH
         logo_pixmap = QPixmap(logo_path)
         logo_label.setFixedSize(142, 100)
         logo_label.setScaledContents(True)
