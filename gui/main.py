@@ -9,74 +9,25 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QPixmap
+import constants
 import csv
 from logic.com_reader import ComPortReader
 from logic.com_selector import list_com_ports
-from logic.parser import parse_cpd_cards
+from logic.file_parser import parse_file
+from services.card_validator import CardValidator
+from gui.ui.preview_window import PreviewWindow
+from gui.ui.select_start_card_dialog import SelectStartCardDialog
 
 
 class Worker(QObject):
     data_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
-class PreviewWindow(QDialog):
-    def __init__(self, expected_cards, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Preview Expected Cards")
-        self.setMinimumSize(400, 300)
-        self.setStyleSheet(parent.styleSheet()) # Inherit stylesheet
-
-        layout = QVBoxLayout(self)
-
-        if not expected_cards:
-            layout.addWidget(QLabel("No expected cards loaded."))
-        else:
-            table = QTableWidget(len(expected_cards), 2)
-            table.setHorizontalHeaderLabels(["NUMCARD", "ICCID"])
-            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers) # Make table non-editable
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            for row, (numcard, iccid) in enumerate(expected_cards):
-                table.setItem(row, 0, QTableWidgetItem(numcard))
-                table.setItem(row, 1, QTableWidgetItem(iccid))
-
-            layout.addWidget(table)
-
-class SelectStartCardDialog(QDialog):
-    def __init__(self, expected_cards, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Starting Card")
-        self.setMinimumSize(300, 400)
-        self.setStyleSheet(parent.styleSheet()) # Inherit stylesheet
-        self.selected_index = -1
-
-        layout = QVBoxLayout(self)
-
-        label = QLabel("Select the NUMCARD to start processing from:")
-        layout.addWidget(label)
-
-        self.card_list_widget = QListWidget()
-        for i, (numcard, iccid) in enumerate(expected_cards):
-            self.card_list_widget.addItem(f"{numcard} (ICCID: {iccid})")
-        layout.addWidget(self.card_list_widget)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-
-        self.card_list_widget.itemClicked.connect(self._item_clicked)
-
-    def _item_clicked(self, item):
-        self.selected_index = self.card_list_widget.row(item)
-
-    def get_selected_index(self):
-        return self.selected_index
-
 class ModernCardValidator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.worker = Worker()
+        self.card_validator = CardValidator(self)
         self.log_data = []
         self.selected_file_path = ""
         self.expected_cards = []
@@ -84,7 +35,6 @@ class ModernCardValidator(QMainWindow):
         self.first_scan_received = True
         self.init_ui()
         self.setup_timer()
-        # self.load_sample_data() # Removed to prevent initial sample data
         self.com_port_reader = None
         self.refresh_com_ports()
         self.update_card_display()
@@ -98,15 +48,15 @@ class ModernCardValidator(QMainWindow):
         self.com_port_combo.addItems(ports)
         if not ports:
             self.start_btn.setEnabled(False)
-            self.status_bar.showMessage("No COM ports found.")
+            self.status_bar.showMessage(constants.MSG_NO_COM_PORTS)
         else:
             self.start_btn.setEnabled(True)
-            self.status_bar.showMessage("COM ports refreshed.")
+            self.status_bar.showMessage(constants.MSG_COM_PORTS_REFRESHED)
 
     def start_reading(self):
         selected_port = self.com_port_combo.currentText()
         if not selected_port:
-            self.status_bar.showMessage("Please select a COM port first.")
+            self.status_bar.showMessage(constants.MSG_SELECT_COM_PORT)
             return
 
         self.com_port_reader = ComPortReader(
@@ -115,7 +65,7 @@ class ModernCardValidator(QMainWindow):
             error_callback=self.worker.error_occurred.emit
         )
         self.com_port_reader.start_reading()
-        self.status_bar.showMessage(f"Listening on {selected_port}")
+        self.status_bar.showMessage(constants.MSG_LISTENING_ON_PORT.format(port=selected_port))
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.com_port_combo.setEnabled(False)
@@ -125,106 +75,26 @@ class ModernCardValidator(QMainWindow):
         if self.com_port_reader:
             self.com_port_reader.stop_reading()
             self.com_port_reader = None
-        self.status_bar.showMessage("Stopped listening.")
+        self.status_bar.showMessage(constants.MSG_STOPPED_LISTENING)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.com_port_combo.setEnabled(True)
         self.findChild(QPushButton, "refreshBtn").setEnabled(True)
 
-    
-
     def handle_com_data(self, scanned_code):
-        self.scanner_input.setText(scanned_code)
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self.card_validator.handle_com_data(scanned_code)
 
-        if self.first_scan_received:
-            self.first_scan_received = False
-            # No update_card_display() here, it will be called at the end of this function
-            # or when load_expected_cards is called.
-
-        # Ensure we don't go out of bounds if expected_cards is empty or index is too high
-        expected_numcard = "N/A"
-        expected_iccid_for_display = "N/A"
-        status = "N/A" # Default status if no expected cards
-
-        if self.expected_cards and self.current_card_index < len(self.expected_cards):
-            expected_numcard = self.expected_cards[self.current_card_index][0]
-            expected_iccid_for_display = self.expected_cards[self.current_card_index][1]
-            status = "OK" if scanned_code == expected_iccid_for_display else "NOT OK"
-        elif self.expected_cards and self.current_card_index >= len(self.expected_cards):
-            # Scans received after the expected sequence has ended
-            expected_iccid_for_display = "End of sequence"
-            status = "N/A" # Or "OVERFLOW" or similar
-
-        # Log the current scan's details
-        self.add_log_entry(timestamp, scanned_code, expected_iccid_for_display, status, self.log_table.rowCount() + 1)
-        self.status_bar.showMessage(f"Scanned: {scanned_code} - {status}")
-
-        if status == "NOT OK":
-            # Search for similar values in remaining expected cards
-            similar_cards = []
-            for i in range(self.current_card_index + 1, len(self.expected_cards)):
-                expected_card_value = self.expected_cards[i][1]
-                # Simple similarity check: if scanned_code is a substring of expected_card_value
-                # or expected_card_value is a substring of scanned_code
-                if scanned_code in expected_card_value or expected_card_value in scanned_code:
-                    similar_cards.append((self.expected_cards[i][0], expected_card_value, i)) # (numcard, iccid, index)
-
-            if similar_cards:
-                # Prompt user to choose a similar card or continue
-                options = [f"Num: {num}, ICCID: {iccid}" for num, iccid, _ in similar_cards]
-                options.insert(0, "No, continue with current NOT OK status")
-
-                item, ok = QInputDialog.getItem(self, "Similar Card Found",
-                                                "A similar card was found. Do you want to jump to it?",
-                                                options, 0, False)
-
-                if ok and item != "No, continue with current NOT OK status":
-                    chosen_numcard_str, chosen_iccid = item.replace("Num: ", "").split(", ICCID: ")
-                    chosen_index = -1
-                    for num, iccid, idx in similar_cards:
-                        if num == chosen_numcard_str and iccid == chosen_iccid:
-                            chosen_index = idx
-                            break
-
-                    if chosen_index != -1:
-                        # Log skipped cards
-                        for i in range(self.current_card_index, chosen_index):
-                            skipped_num, skipped_iccid = self.expected_cards[i]
-                            self.add_log_entry(timestamp, "MISSING", skipped_iccid, "SKIPPED", self.log_table.rowCount() + 1)
-
-                        # Update current_card_index to the chosen card's index
-                        self.current_card_index = chosen_index
-                        expected_numcard = self.expected_cards[self.current_card_index][0]
-                        expected_iccid_for_display = self.expected_cards[self.current_card_index][1]
-                        status = "OK" # Mark as OK since we're accepting this jump
-
-                        # Re-log the chosen card as OK
-                        self.add_log_entry(timestamp, scanned_code, expected_iccid_for_display, status, self.log_table.rowCount() + 1)
-                        self.status_bar.showMessage(f"Scanned: {scanned_code} - {status} (Jumped)")
-                    else:
-                        self.stop_reading() # Fallback to original NOT OK if chosen_index not found
-                else:
-                    self.stop_reading() # Stop reading if status is NOT OK
-            else:
-                self.stop_reading() # Stop reading if status is NOT OK
-
-        # Update display for the *next* expected card
-        self.update_card_display()
-
-        # Now, advance the index for the *next* scan
-        self.current_card_index += 1
+    def get_timestamp(self):
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
     def update_card_display(self):
         if self.expected_cards:
             if self.current_card_index < len(self.expected_cards):
-                # Display ICCID for current card
                 self.current_card_input.setText(self.expected_cards[self.current_card_index][1])
             else:
                 self.current_card_input.setText("End of sequence")
             
             if self.current_card_index + 1 < len(self.expected_cards):
-                # Display ICCID for next expected card
                 self.next_expected_card_input.setText(self.expected_cards[self.current_card_index + 1][1])
             else:
                 self.next_expected_card_input.setText("End of sequence")
@@ -236,113 +106,112 @@ class ModernCardValidator(QMainWindow):
         self.status_bar.showMessage(error)
 
     def init_ui(self):
-        self.setWindowTitle("Card Sequence Validator")
+        self.setWindowTitle(constants.APP_TITLE)
         self.setMinimumSize(900, 650)
 
         self.setStyleSheet("""
-            /* General Window and Background */
-            QMainWindow {
+             /* General Window and Background */
+             QMainWindow {
                 background-color: #FFFFFF; /* General Backgrounds */
                 color: #354563; /* Headers/Main UI Text */
-            }
-
-            /* Labels */
-            QLabel {
+             }
+ 
+             /* Labels */
+             QLabel {
                 color: #354563; /* Headers/Main UI Text */
-                font-weight: bold;
-                padding: 2px;
-            }
-
-            /* LineEdits and ComboBoxes (Input/Display Fields) */
-            QLineEdit, QComboBox {
-                padding: 10px;
+                 font-weight: bold;
+                 padding: 2px;
+             }
+ 
+             /* LineEdits and ComboBoxes (Input/Display Fields) */
+             QLineEdit, QComboBox {
+                 padding: 10px;
                 border: 1px solid #A0B0C0; /* Slightly darker than #BAC7D2 */
-                border-radius: 5px;
+                 border-radius: 5px;
                 background-color: #BAC7D2; /* Panels/Card Backgrounds */
                 color: #354563; /* Headers/Main UI Text */
-                selection-background-color: #4896DD; /* Primary Buttons & Active Controls */
+                selection-background-color: #7AB8F3; /* Lighter shade for selection */
                 selection-color: #FFFFFF; /* General Backgrounds */
-            }
-            QLineEdit:focus, QComboBox:focus {
+             }
+             QLineEdit:focus, QComboBox:focus {
                 border-color: #4896DD; /* Primary Buttons & Active Controls */
                 background-color: #BAC7D2; /* Panels/Card Backgrounds */
-            }
-            QLineEdit::placeholder {
-                color: #99AABF; /* Lighter shade for placeholder */
-            }
-
-            /* PushButtons */
-            QPushButton {
-                padding: 10px 20px;
-                border-radius: 5px;
-                font-weight: bold;
+             }
+             QLineEdit::placeholder {
+                 color: #99AABF; /* Lighter shade for placeholder */
+             }
+ 
+             /* Buttons */
+             QPushButton {
+                 padding: 10px 20px;
+                 border-radius: 5px;
+                 font-weight: bold;
                 color: #FFFFFF; /* General Backgrounds */
                 background-color: #4896DD; /* Primary Buttons & Active Controls */
-                border: none;
-            }
-            QPushButton:hover {
+                 border: none;
+             }
+             QPushButton:hover {
                 background-color: #7DD2F3; /* Hover Effects/Sliders */
-            }
-            QPushButton:pressed {
-                background-color: #3A7BBF; /* Darker shade of Primary Buttons & Active Controls */
-            }
-            QPushButton:disabled {
+             }
+             QPushButton:pressed {
+                background-color: #7AB8F3; /* Lighter shade for pressed state */
+             }
+             QPushButton:disabled {
                 background-color: #D0D8E0; /* Lighter shade of Panels/Card Backgrounds */
                 color: #354563; /* Headers/Main UI Text */
                 border: 1px solid #BAC7D2; /* Panels/Card Backgrounds */
-            }
-
-            /* Table Widget */
-            QTableWidget {
+             }
+ 
+             /* Table Widget */
+             QTableWidget {
                 background-color: #BAC7D2; /* Panels/Card Backgrounds */
                 color: #354563; /* Headers/Main UI Text */
                 border: 1px solid #FFFFFF; /* General Backgrounds */
-                border-radius: 5px;
+                 border-radius: 5px;
                 gridline-color: #FFFFFF; /* General Backgrounds */
                 selection-background-color: #4896DD; /* Primary Buttons & Active Controls */
                 selection-color: #FFFFFF; /* General Backgrounds */
                 alternate-background-color: #FFFFFF; /* General Backgrounds */
-            }
-            QHeaderView::section {
+             }
+             QHeaderView::section {
                 background-color: #FFFFFF; /* General Backgrounds */
-                padding: 10px;
-                font-weight: bold;
+                 padding: 10px;
+                 font-weight: bold;
                 color: #354563; /* Headers/Main UI Text */
                 border: 1px solid #BAC7D2; /* Panels/Card Backgrounds */
                 border-bottom: 2px solid #4896DD; /* Primary Buttons & Active Controls */
-            }
-
-            /* Header Frame */
-            QFrame#headerFrame {
+             }
+ 
+             /* Header Frame */
+             QFrame#headerFrame {
                 background-color: #BAC7D2; /* Panels/Card Backgrounds */
                 border: 1px solid #FFFFFF; /* General Backgrounds */
-                border-radius: 5px;
-                padding: 10px;
-            }
-
-            /* Title Label */
-            QLabel#titleLabel {
-                font-size: 26px;
-                font-weight: bold;
+                 border-radius: 5px;
+                 padding: 10px;
+             }
+ 
+             /* Specific Labels */
+             QLabel#titleLabel {
+                 font-size: 26px;
+                 font-weight: bold;
                 color: #000000; /* Changed to black for visibility */
-            }
-            QLabel#clockLabel {
-                font-size: 14px;
+             }
+             QLabel#clockLabel {
+                 font-size: 14px;
                 color: #000000; /* Changed to black for visibility */
                 border: 1px solid #BAC7D2; /* Panels/Card Backgrounds */
-                border-radius: 4px;
-                padding: 6px;
+                 border-radius: 4px;
+                 padding: 6px;
                 background-color: #BAC7D2; /* Panels/Card Backgrounds */
-            }
-
-            /* Status Bar */
-            QStatusBar {
+             }
+ 
+             /* Status Bar */
+             QStatusBar {
                 background-color: #BAC7D2; /* Panels/Card Backgrounds */
                 color: #354563; /* Headers/Main UI Text */
-                padding: 5px;
-            }
-        """)
-
+                 padding: 5px;
+             }
+         """)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -358,23 +227,23 @@ class ModernCardValidator(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Application ready")
+        self.status_bar.showMessage(constants.MSG_APP_READY)
 
     def create_header(self, layout):
         header_frame = QFrame()
         header_frame.setObjectName("headerFrame")
         h_layout = QHBoxLayout(header_frame)
-        h_layout.setContentsMargins(15, 15, 15, 15)
+        h_layout.setContentsMargins(15, 5, 15, 5)
 
-        # Add logo
         logo_label = QLabel()
-        logo_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'logo.png')
+        logo_path = os.path.join(constants.ASSETS_DIR, constants.LOGO_FILE)
         logo_pixmap = QPixmap(logo_path)
-        # Scale pixmap to a reasonable size, e.g., 50x50
-        logo_label.setPixmap(logo_pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        logo_label.setFixedSize(142, 100)
+        logo_label.setScaledContents(True)
+        logo_label.setPixmap(logo_pixmap)
         h_layout.addWidget(logo_label)
 
-        title_label = QLabel("Card Sequence Validator")
+        title_label = QLabel(constants.APP_TITLE)
         title_label.setObjectName("titleLabel")
         h_layout.addWidget(title_label)
         h_layout.addStretch()
@@ -386,7 +255,6 @@ class ModernCardValidator(QMainWindow):
         layout.addWidget(header_frame)
 
     def create_input_sections(self, layout):
-        # COM Port Selection
         com_port_layout = QHBoxLayout()
         com_port_layout.addWidget(QLabel("Select COM Port:"))
         self.com_port_combo = QComboBox()
@@ -397,7 +265,6 @@ class ModernCardValidator(QMainWindow):
         com_port_layout.addWidget(refresh_btn)
         layout.addLayout(com_port_layout)
 
-        # Start/Stop Buttons
         button_layout = QHBoxLayout()
         self.start_btn = QPushButton("Start")
         self.start_btn.clicked.connect(self.start_reading)
@@ -411,7 +278,7 @@ class ModernCardValidator(QMainWindow):
         scan_layout = QHBoxLayout()
         scan_layout.addWidget(QLabel("Scanner Input:"))
         self.scanner_input = QLineEdit()
-        self.scanner_input.setPlaceholderText("Waiting for scan...")
+        self.scanner_input.setPlaceholderText(constants.MSG_WAITING_FOR_SCAN)
         self.scanner_input.setReadOnly(True)
         scan_layout.addWidget(self.scanner_input)
         layout.addLayout(scan_layout)
@@ -435,7 +302,7 @@ class ModernCardValidator(QMainWindow):
     def create_log_viewer(self, layout):
         layout.addWidget(QLabel("Log Viewer"))
         self.log_table = QTableWidget(0, 5)
-        self.log_table.setHorizontalHeaderLabels(["Index", "Timestamp", "Scanned Code", "Expected Code", "Status"])
+        self.log_table.setHorizontalHeaderLabels(constants.LOG_TABLE_HEADERS)
         header = self.log_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
@@ -446,29 +313,29 @@ class ModernCardValidator(QMainWindow):
         self.log_table.setColumnWidth(1, 100)
         self.log_table.setColumnWidth(4, 80)
         self.log_table.setAlternatingRowColors(True)
-        layout.addWidget(self.log_table)
+        layout.addWidget(self.log_table, 1)
 
     def create_file_operations(self, layout):
         file_layout = QHBoxLayout()
-        select_btn = QPushButton("Select .cpd/txt File")
+        select_btn = QPushButton(constants.BTN_SELECT_FILE)
         select_btn.setObjectName("fileBtn")
         select_btn.clicked.connect(self.select_file)
-        preview_btn = QPushButton("Preview File")
+        preview_btn = QPushButton(constants.BTN_PREVIEW_FILE)
         preview_btn.setObjectName("fileBtn")
         preview_btn.clicked.connect(self.preview_file)
-        download_btn = QPushButton("Download Logs")
+        download_btn = QPushButton(constants.BTN_DOWNLOAD_LOGS)
         download_btn.setObjectName("fileBtn")
         download_btn.clicked.connect(self.download_logs)
-        clear_upload_btn = QPushButton("Clear Upload")
+        clear_upload_btn = QPushButton(constants.BTN_CLEAR_UPLOAD)
         clear_upload_btn.setObjectName("clearUploadBtn")
         clear_upload_btn.clicked.connect(self.clear_loaded_file)
         
-        self.set_start_card_btn = QPushButton("Set Start Card")
+        self.set_start_card_btn = QPushButton(constants.BTN_SET_START_CARD)
         self.set_start_card_btn.setObjectName("setStartCardBtn")
         self.set_start_card_btn.clicked.connect(self.select_start_card)
-        self.set_start_card_btn.setEnabled(False) # Initially disabled
+        self.set_start_card_btn.setEnabled(False)
 
-        clear_log_btn = QPushButton("Clear Log")
+        clear_log_btn = QPushButton(constants.BTN_CLEAR_LOG)
         clear_log_btn.setObjectName("clearLogBtn")
         clear_log_btn.clicked.connect(self.clear_log_table)
         
@@ -481,7 +348,7 @@ class ModernCardValidator(QMainWindow):
         layout.addLayout(file_layout)
 
     def create_bottom_section(self, layout):
-        pass # Removed text_area and its layout
+        pass
 
     def setup_timer(self):
         self.timer = QTimer()
@@ -492,10 +359,6 @@ class ModernCardValidator(QMainWindow):
     def update_clock(self):
         now = datetime.now().strftime("%Y-%m-%d | %H:%M:%S.%f")[:-3]
         self.clock_label.setText(now)
-
-    def load_sample_data(self):
-        self.add_log_entry("19:18:10", "ABCD123456", "N/A", "OK", 1)
-        self.add_log_entry("19:18:30", "ABCD123457", "N/A", "NOT OK", 2)
 
     def add_log_entry(self, timestamp, scanned_code, expected_code, status, index):
         row_pos = self.log_table.rowCount()
@@ -520,72 +383,62 @@ class ModernCardValidator(QMainWindow):
 
         status_item.setFont(QFont("Arial", weight=QFont.Weight.Bold))
         if status == "OK":
-            status_item.setForeground(QColor("#2ecc71")) # Green
+            status_item.setForeground(QColor("#2ecc71"))
         else:
-            status_item.setForeground(QColor("#e74c3c")) # Red
+            status_item.setForeground(QColor("#e74c3c"))
         self.log_table.setItem(row_pos, 4, status_item)
 
         self.log_data.append({
             "index": index, "timestamp": timestamp, "scanned_code": scanned_code, "expected_code": expected_code, "status": status
         })
 
-    
-
-    
-
     def select_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select File", "",
-                                                   "CPD Files (*.cpd);;Text Files (*.txt);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, constants.TITLE_SELECT_FILE, "", constants.FILE_FILTER)
         if file_path:
             self.selected_file_path = file_path
-            self.status_bar.showMessage(f"Selected: {os.path.basename(file_path)}", 3000)
+            self.status_bar.showMessage(constants.MSG_FILE_SELECTED.format(file=os.path.basename(file_path)), 3000)
             self.load_expected_cards()
             self.findChild(QPushButton, "fileBtn").setEnabled(False)
 
     def preview_file(self):
         if not self.selected_file_path:
-            QMessageBox.warning(self, "Warning", "Please select a file first!")
+            QMessageBox.warning(self, "Warning", constants.MSG_NO_FILE_SELECTED)
             return
         
-        # Pass the expected_cards directly to the new preview window
         preview_dialog = PreviewWindow(self.expected_cards, self)
-        preview_dialog.exec() # Show as modal dialog
+        preview_dialog.exec()
 
     def load_expected_cards(self):
         if not self.selected_file_path:
             self.expected_cards = []
             return
         try:
-            # Use the parser to get the paired cards
-            parsed_data = parse_cpd_cards(self.selected_file_path)
-            # self.expected_cards will now store (NUMCARD, ICCID) tuples
+            parsed_data = parse_file(self.selected_file_path)
             self.expected_cards = [card_tuple for card_tuple, _ in parsed_data]
             
             self.current_card_index = 0
             self.first_scan_received = True
-            self.status_bar.showMessage(f"Loaded {len(self.expected_cards)} expected cards.", 3000)
-            self.set_start_card_btn.setEnabled(True) # Enable when file is loaded
+            self.status_bar.showMessage(constants.MSG_LOADED_CARDS.format(count=len(self.expected_cards)), 3000)
+            self.set_start_card_btn.setEnabled(True)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error loading expected cards: {str(e)}")
+            QMessageBox.critical(self, "Error", constants.MSG_ERROR_LOADING_CARDS.format(error=str(e)))
             self.expected_cards = []
 
     def download_logs(self):
         if not self.log_data:
-            QMessageBox.information(self, "Info", "No log data to download!")
+            QMessageBox.information(self, "Info", constants.MSG_NO_LOG_DATA)
             return
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Logs",
-                                                   f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                                   "CSV Files (*.csv)")
+        file_path, _ = QFileDialog.getSaveFileName(self, constants.TITLE_SAVE_LOGS, f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", constants.CSV_FILE_FILTER)
         if file_path:
             try:
                 with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
                     writer = csv.DictWriter(csvfile, fieldnames=['index', 'timestamp', 'scanned_code', 'expected_code', 'status'])
                     writer.writeheader()
                     writer.writerows(self.log_data)
-                QMessageBox.information(self, "Success", f"Logs saved to {file_path}")
+                QMessageBox.information(self, "Success", constants.MSG_LOGS_SAVED.format(path=file_path))
                 self.status_bar.showMessage("Logs downloaded successfully", 3000)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Error saving file: {str(e)}")
+                QMessageBox.critical(self, "Error", constants.MSG_ERROR_SAVING_FILE.format(error=str(e)))
 
     def clear_loaded_file(self):
         self.selected_file_path = ""
@@ -595,24 +448,21 @@ class ModernCardValidator(QMainWindow):
         self.scanner_input.clear()
         self.current_card_input.clear()
         self.next_expected_card_input.clear()
-        # self.text_area.clear() # Removed as text_area is no longer present
         self.findChild(QPushButton, "fileBtn").setEnabled(True)
-        self.set_start_card_btn.setEnabled(False) # Disable when file is cleared
-        self.status_bar.showMessage("Loaded file cleared.", 3000)
+        self.set_start_card_btn.setEnabled(False)
+        self.status_bar.showMessage(constants.MSG_CLEARED_LOADED_FILE, 3000)
 
     def clear_log_table(self):
-        reply = QMessageBox.question(self, "Clear Log",
-                                     "Are you sure you want to clear the log table? This action cannot be undone.",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self, "Clear Log", constants.MSG_CONFIRM_CLEAR_LOG, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
 
         if reply == QMessageBox.StandardButton.Yes:
-            self.log_table.setRowCount(0) # Clear all rows from the table
-            self.log_data = [] # Clear the log data list
-            self.status_bar.showMessage("Log table cleared.", 3000)
+            self.log_table.setRowCount(0)
+            self.log_data = []
+            self.status_bar.showMessage(constants.MSG_LOG_TABLE_CLEARED, 3000)
 
     def select_start_card(self):
         if not self.expected_cards:
-            QMessageBox.warning(self, "Warning", "Please load a file first to select a starting card.")
+            QMessageBox.warning(self, "Warning", constants.MSG_NO_FILE_SELECTED)
             return
 
         dialog = SelectStartCardDialog(self.expected_cards, self)
@@ -621,12 +471,9 @@ class ModernCardValidator(QMainWindow):
             if selected_index != -1:
                 self.current_card_index = selected_index
                 self.update_card_display()
-                QMessageBox.information(self, "Success", f"Starting processing from NUMCARD: {self.expected_cards[selected_index][0]}")
+                QMessageBox.information(self, "Success", constants.MSG_START_PROCESSING_FROM.format(numcard=self.expected_cards[selected_index][0]))
             else:
-                QMessageBox.warning(self, "Warning", "No card selected.")
-
-    
-
+                QMessageBox.warning(self, "Warning", constants.MSG_NO_CARD_SELECTED)
 
 def main():
     app = QApplication(sys.argv)
